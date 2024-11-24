@@ -8,6 +8,23 @@ import init, {
     load_with_wnfs_key_native
 } from '../pkg/wnfslib_web';
 
+// Add this before your WebDatastore class
+declare global {
+    function getFromStorage(key: string): Promise<Uint8Array>;
+    function putToStorage(key: string, value: Uint8Array): Promise<void>;
+}
+
+// Implement the global functions using your WebDatastore instance
+let globalStore: WebDatastore;
+
+window.getFromStorage = async (key: string): Promise<Uint8Array> => {
+    return globalStore.getFromStorage(key);
+};
+
+window.putToStorage = async (key: string, value: Uint8Array): Promise<void> => {
+    return globalStore.putToStorage(key, value);
+};
+
 class WebDatastore {
     private store: Map<string, Uint8Array>;
     private prefix: string;
@@ -46,7 +63,7 @@ async function runTests() {
         init_rust_logger();
 
         // Create datastore
-        const datastore = new WebDatastore('test-');
+        globalStore = new WebDatastore('test-');
         const prefix = 'test-store';
 
         // Generate WNFS key

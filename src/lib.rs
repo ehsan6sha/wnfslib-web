@@ -7,7 +7,6 @@ mod web {
     use anyhow::Result;
     use wnfsutils::blockstore::{FFIFriendlyBlockStore, FFIStore};
     use wnfsutils::private_forest::PrivateDirectoryHelper;
-    use hex;
     use log::trace;
     // Or import the entire prelude
 

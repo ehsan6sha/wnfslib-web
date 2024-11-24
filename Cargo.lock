@@ -2442,8 +2442,8 @@ dependencies = [
 
 [[package]]
 name = "wnfsutils"
-version = "1.1.6"
-source = "git+https://github.com/functionland//wnfs-utils-web.git?tag=v1.1.6#9f4b86a6f14069ae81292d5fa849f2c794f0d283"
+version = "1.1.7"
+source = "git+https://github.com/functionland//wnfs-utils-web.git?tag=v1.1.7#ea20556246fc80f2ca41f4c683563b4ce4dbbf37"
 dependencies = [
  "anyhow",
  "async-std",
