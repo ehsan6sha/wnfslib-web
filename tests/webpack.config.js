@@ -1,6 +1,7 @@
 const path = require('path');
 
 module.exports = {
+  mode: 'development',
   entry: './index.ts',
   module: {
     rules: [
@@ -20,9 +21,12 @@ module.exports = {
   },
   devServer: {
     static: {
-      directory: path.join(__dirname, 'public'),
+      directory: path.join(__dirname, './'),
     },
     compress: true,
     port: 8080,
   },
+  experiments: {
+    asyncWebAssembly: true
+  }
 };
