@@ -1,12 +1,19 @@
 {
-    "scripts": {
-      "build": "webpack",
-      "serve": "webpack serve"
-    },
-    "devDependencies": {
-      "typescript": "^4.5.4",
-      "webpack": "^5.65.0",
-      "webpack-cli": "^4.9.1",
-      "webpack-dev-server": "^4.7.2"
-    }
-  }
+  "scripts": {
+    "build": "webpack",
+    "serve": "webpack serve"
+  },
+  "devDependencies": {
+    "typescript": "^4.5.4",
+    "webpack": "^5.65.0",
+    "webpack-cli": "^4.9.1",
+    "webpack-dev-server": "^4.7.2"
+  },
+  "name": "tests",
+  "version": "1.0.0",
+  "main": "webpack.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}
