@@ -1,3 +1,5 @@
+This library contains the typescript wasm code for wnfs to be used in web. The example app is in tests folder.
+
 ## Build
 
 ```
