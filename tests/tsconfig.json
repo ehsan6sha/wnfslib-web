@@ -1,12 +1,12 @@
 {
-    "compilerOptions": {
-      "outDir": "./dist/",
-      "sourceMap": true,
-      "noImplicitAny": true,
-      "module": "es6",
-      "target": "es5",
-      "jsx": "react",
-      "allowJs": true,
-      "moduleResolution": "node"
-    }
+  "compilerOptions": {
+    "target": "es2015", // Ensure target is ES2015 or higher
+    "downlevelIteration": true, // Enable downlevel iteration for older targets
+    "lib": ["dom", "es2015", "es2015.iterable"], // Add ES2015 libraries
+    "strict": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true
   }
+}

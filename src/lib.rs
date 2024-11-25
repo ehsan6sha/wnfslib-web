@@ -1,445 +1,493 @@
-#[cfg(target_arch = "wasm32")]
-mod web {
-    use libipld::Cid;
-    use wnfs::common::Metadata;
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::future_to_promise;
-    use anyhow::Result;
-    use wnfsutils::blockstore::{FFIFriendlyBlockStore, FFIStore};
-    use wnfsutils::private_forest::PrivateDirectoryHelper;
-    use log::trace;
-    // Or import the entire prelude
+use libipld::Cid;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use js_sys::{Reflect, Uint8Array, Function, Promise};
+use log::{trace, Level};
+use console_log;
+use console_error_panic_hook;
+use anyhow::{Result, Error};
+use serde_wasm_bindgen;
+use wasm_bindgen_futures::js_sys;
+use wnfsutils::blockstore::{FFIFriendlyBlockStore, FFIStore};
+use wnfsutils::private_forest::PrivateDirectoryHelper;
+use wasm_bindgen_futures::JsFuture;
+use futures_util::TryFutureExt;
+use serde::Serialize;
 
+#[derive(Serialize)]
+struct PrivateDirectoryHelperResult {
+    forest_cid: String,
+    root_dir_cid: String,
+}
 
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_namespace = console)]
-        fn log(s: &str);
-
-        #[wasm_bindgen(js_namespace = console)]
-        fn error(s: &str);
-
-        #[wasm_bindgen(js_name = getFromStorage)]
-        fn get_from_storage(key: &str) -> js_sys::Promise;
-
-        #[wasm_bindgen(js_name = putToStorage)]
-        fn put_to_storage(key: &str, value: &[u8]) -> js_sys::Promise;
-    }
-
-    #[derive(Clone)]
-    struct WebStore {
-        prefix: String,
-    }
-
-    impl<'a> WebStore {
-        fn new(prefix: String) -> Self {
-            Self { prefix }
-        }
-    }
-
-    impl<'a> FFIStore<'a> for WebStore {
-        fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>, anyhow::Error> {
-            let cid_str = hex::encode(&cid);
-            let key = format!("{}{}", self.prefix, cid_str);
-            
-            // Convert JavaScript Promise to Rust Future
-            let promise = get_from_storage(&key);
-            let future = wasm_bindgen_futures::JsFuture::from(promise);
-            
-            // Execute the future and handle the result
-            let result: Result<Vec<u8>, anyhow::Error> = futures::executor::block_on(async move {
-                let js_value = future.await.map_err(|e| anyhow::anyhow!("{:?}", e))?;
-                let array = js_sys::Uint8Array::new(&js_value);
-                Ok(array.to_vec())
-            });
-        
-            match result {
-                Ok(data) => {
-                    trace!("**********************get_block finished**************");
-                    Ok(data)
-                }
-                Err(e) => {
-                    trace!("wnfsError get_block: {:?}", e.to_string());
-                    Ok(Vec::new())
-                }
-            }
-        }
-
-        fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<(), anyhow::Error> {
-            let cid_str = hex::encode(&cid);
-            let key = format!("{}{}", self.prefix, cid_str);
-            
-            trace!("**********************put_block started**************");
-            trace!("**********************put_block cid={:?}", &cid);
-            trace!("**********************put_block bytes={:?}", &bytes);
-            
-            // Convert JavaScript Promise to Rust Future
-            let promise = put_to_storage(&key, &bytes);
-            let future = wasm_bindgen_futures::JsFuture::from(promise);
-            
-            // Execute the future and handle the result
-            let result: Result<(), anyhow::Error> = futures::executor::block_on(async move {
-                future.await.map_err(|e| anyhow::anyhow!("{:?}", e))?;
-                Ok(())
-            });
-        
-            match result {
-                Ok(_) => {
-                    trace!("**********************put_block finished**************");
-                    Ok(())
-                }
-                Err(e) => {
-                    trace!("**********************put_block error: {:?}**************", e);
-                    Err(e)
-                }
-            }
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn init_rust_logger() {
-        console_error_panic_hook::set_once();
-        wasm_logger::init(wasm_logger::Config::new(log::Level::Trace));
-    }
-
-    #[wasm_bindgen]
-    pub fn load_with_wnfs_key_native(
-        fula_client_prefix: &str,
-        wnfs_key: Vec<u8>,
-        cid: String,
-    ) -> js_sys::Promise {
-        let store = WebStore::new(fula_client_prefix.to_string());
-        let block_store = &mut FFIFriendlyBlockStore::new(Box::new(store));
-        let forest_cid = deserialize_cid(cid);
-        let helper_res = PrivateDirectoryHelper::synced_load_with_wnfs_key(block_store, forest_cid, wnfs_key);
-        future_to_promise(async move {
-            match helper_res {
-                Ok(_) => Ok(JsValue::null()),
-                Err(msg) => Err(JsValue::from_str(&msg.to_string())),
-            }
-        })
-    }
-
-    #[wasm_bindgen]
-    pub fn init_native(
-        fula_client_prefix: &str,
-        wnfs_key: Vec<u8>,
-    ) -> js_sys::Promise {
-        let store = WebStore::new(fula_client_prefix.to_string());
-        let block_store = &mut FFIFriendlyBlockStore::new(Box::new(store));
-        let helper_res = PrivateDirectoryHelper::synced_init(block_store, wnfs_key);
-        future_to_promise(async move {
-            match helper_res {
-                Ok((_, _, cid)) => Ok(serde_wasm_bindgen::to_value(&cid).unwrap()),
-                Err(msg) => Err(JsValue::from_str(&msg.to_string())),
-            }
-        })
-    }
-
-    #[wasm_bindgen]
-    pub fn write_file_native(
-        fula_client_prefix: &str,
-        cid: String,
-        path_segments: String,
-        content: Vec<u8>,
-    ) -> js_sys::Promise {
-        trace!("**********************writeFileNative started**************");
-        let store = WebStore::new(fula_client_prefix.to_string());
-        let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-        let forest_cid = deserialize_cid(cid);
-        
-        future_to_promise(async move {
-            match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-                Ok(mut helper) => {
-                    let path_segments = prepare_path_segments(path_segments);
-                    let segments: Vec<String> = serde_wasm_bindgen::from_value(path_segments).unwrap();
-                    
-                    match helper.synced_write_file(&segments, content, 0) {
-                        Ok(new_cid) => {
-                            trace!("**********************writeFileNative finished**************");
-                            Ok(serde_wasm_bindgen::to_value(&new_cid).unwrap())
-                        }
-                        Err(msg) => {
-                            trace!("wnfsError in write_file_native: {:?}", msg);
-                            Err(JsValue::from_str(&msg.to_string()))
-                        }
-                    }
-                }
-                Err(msg) => {
-                    trace!("wnfsError in write_file_native: {:?}", msg);
-                    Err(JsValue::from_str(&msg.to_string()))
-                }
-            }
-        })
-    }
-
-    #[wasm_bindgen]
-    pub fn read_file_native(
-        fula_client_prefix: &str,
-        cid: String,
-        path_segments: String,
-    ) -> js_sys::Promise {
-        let store = WebStore::new(fula_client_prefix.to_string());
-        let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-        let forest_cid = deserialize_cid(cid);
-        
-        future_to_promise(async move {
-            match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-                Ok(mut helper) => {
-                    let segments = prepare_path_segments(path_segments);
-                    let path_vec: Vec<String> = serde_wasm_bindgen::from_value(segments)?;
-                    
-                    match helper.synced_read_file(&path_vec) {
-                        Ok(content) => {
-                            let array = js_sys::Uint8Array::from(content.as_slice());
-                            Ok(array.into())
-                        }
-                        Err(msg) => Err(JsValue::from_str(&msg.to_string()))
-                    }
-                }
-                Err(msg) => Err(JsValue::from_str(&msg.to_string()))
-            }
-        })
-    }
-
-    #[wasm_bindgen]
-    pub fn mkdir_native(
-        fula_client_prefix: &str,
-        cid: String,
-        path_segments: String,
-    ) -> js_sys::Promise {
-        trace!("**********************mkDirNative started**************");
-        let store = WebStore::new(fula_client_prefix.to_string());
-        let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-        let forest_cid = deserialize_cid(cid);
-        
-        future_to_promise(async move {
-            match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-                Ok(mut helper) => {
-                    let segments = prepare_path_segments(path_segments);
-                    let path_vec: Vec<String> = serde_wasm_bindgen::from_value(segments)?;
-                    
-                    match helper.synced_mkdir(&path_vec) {
-                        Ok(new_cid) => {
-                            trace!("**********************mkDirNative finished**************");
-                            Ok(serde_wasm_bindgen::to_value(&new_cid).unwrap())
-                        }
-                        Err(msg) => {
-                            trace!("wnfsError in mkdir_native: {:?}", msg);
-                            Err(JsValue::from_str(&msg.to_string()))
-                        }
-                    }
-                }
-                Err(msg) => {
-                    trace!("wnfsError in mkdir_native: {:?}", msg);
-                    Err(JsValue::from_str(&msg.to_string()))
-                }
-            }
-        })
-    }
-
-    #[wasm_bindgen]
-pub fn mv_native(
-    fula_client_prefix: &str,
-    cid: String,
-    source_path_segments: String,
-    target_path_segments: String,
-) -> js_sys::Promise {
-    trace!("**********************mvNative started**************");
-    let store = WebStore::new(fula_client_prefix.to_string());
-    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-    let forest_cid = deserialize_cid(cid);
-    
-    future_to_promise(async move {
-        match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-            Ok(mut helper) => {
-                let source_segments = prepare_path_segments(source_path_segments);
-                let target_segments = prepare_path_segments(target_path_segments);
-                
-                let source_vec: Vec<String> = serde_wasm_bindgen::from_value(source_segments)?;
-                let target_vec: Vec<String> = serde_wasm_bindgen::from_value(target_segments)?;
-                
-                match helper.synced_mv(&source_vec, &target_vec) {
-                    Ok(new_cid) => {
-                        trace!("**********************mvNative finished**************");
-                        Ok(serde_wasm_bindgen::to_value(&new_cid).unwrap())
-                    }
-                    Err(msg) => {
-                        trace!("wnfsError in mv_native: {:?}", msg);
-                        Err(JsValue::from_str(&msg.to_string()))
-                    }
-                }
-            }
-            Err(msg) => {
-                trace!("wnfsError in mv_native: {:?}", msg);
-                Err(JsValue::from_str(&msg.to_string()))
-            }
-        }
-    })
+#[wasm_bindgen(start)]
+pub fn init() {
+    console_error_panic_hook::set_once();
+    console_log::init_with_level(Level::Trace).expect("Error initializing logger");
 }
 
 #[wasm_bindgen]
-pub fn cp_native(
-    fula_client_prefix: &str,
-    cid: String,
-    source_path_segments: String,
-    target_path_segments: String,
-) -> js_sys::Promise {
-    trace!("**********************cpNative started**************");
-    let store = WebStore::new(fula_client_prefix.to_string());
-    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-    let forest_cid = deserialize_cid(cid);
-    
-    future_to_promise(async move {
-        match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-            Ok(mut helper) => {
-                let source_segments = prepare_path_segments(source_path_segments);
-                let target_segments = prepare_path_segments(target_path_segments);
-                
-                let source_vec: Vec<String> = serde_wasm_bindgen::from_value(source_segments)?;
-                let target_vec: Vec<String> = serde_wasm_bindgen::from_value(target_segments)?;
-                
-                match helper.synced_cp(&source_vec, &target_vec) {
-                    Ok(new_cid) => {
-                        trace!("**********************cpNative finished**************");
-                        Ok(serde_wasm_bindgen::to_value(&new_cid).unwrap())
-                    }
-                    Err(msg) => {
-                        trace!("wnfsError in cp_native: {:?}", msg);
-                        Err(JsValue::from_str(&msg.to_string()))
-                    }
-                }
-            }
-            Err(msg) => {
-                trace!("wnfsError in cp_native: {:?}", msg);
-                Err(JsValue::from_str(&msg.to_string()))
-            }
-        }
-    })
+#[derive(Clone)]
+pub struct JSStore {
+    js_client: JsValue,
 }
 
 #[wasm_bindgen]
-pub fn rm_native(
-    fula_client_prefix: &str,
-    cid: String,
-    path_segments: String,
-) -> js_sys::Promise {
-    trace!("**********************rmNative started**************");
-    let store = WebStore::new(fula_client_prefix.to_string());
-    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-    let forest_cid = deserialize_cid(cid);
-    
-    future_to_promise(async move {
-        match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-            Ok(mut helper) => {
-                let segments = prepare_path_segments(path_segments);
-                let path_vec: Vec<String> = serde_wasm_bindgen::from_value(segments)?;
-                
-                match helper.synced_rm(&path_vec) {
-                    Ok(new_cid) => {
-                        trace!("**********************rmNative finished**************");
-                        Ok(serde_wasm_bindgen::to_value(&new_cid).unwrap())
-                    }
-                    Err(msg) => {
-                        trace!("wnfsError in rm_native: {:?}", msg);
-                        Err(JsValue::from_str(&msg.to_string()))
-                    }
-                }
-            }
-            Err(msg) => {
-                trace!("wnfsError in rm_native: {:?}", msg);
-                Err(JsValue::from_str(&msg.to_string()))
-            }
+impl JSStore {
+    #[wasm_bindgen(constructor)]
+    pub fn new(js_client: JsValue) -> Self {
+        Self { js_client }
+    }
+
+    #[wasm_bindgen]
+    pub async fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        trace!("**********************get_block started**************");
+
+        // Convert CID to Uint8Array
+        let cid_js_array = Uint8Array::from(cid.as_slice());
+
+        // Get the "get" method from js_client
+        let binding = Reflect::get(&self.js_client, &JsValue::from_str("get"))
+            .map_err(|e| JsValue::from_str(&format!("Failed to get 'get' method: {:?}", e)))?;
+        let get_fn = binding
+            .dyn_ref::<Function>()
+            .ok_or_else(|| JsValue::from_str("Expected 'get' to be a JavaScript function"))?;
+
+        // Call the "get" method (returns a Promise)
+        let promise_value = get_fn
+            .call1(&self.js_client, &cid_js_array.into())
+            .map_err(|e| JsValue::from_str(&format!("Failed to call 'get': {:?}", e)))?;
+        trace!("Raw result from JS get method (Promise): {:?}", promise_value);
+
+        // Convert JsValue to js_sys::Promise
+        let promise = promise_value.dyn_into::<js_sys::Promise>().map_err(|e| {
+            JsValue::from_str(&format!("Failed to convert JsValue to Promise: {:?}", e))
+        })?;
+
+        // Await the Promise and resolve it into a JsValue
+        let result = JsFuture::from(promise).await?;
+        trace!("Resolved result from JS Promise: {:?}", result);
+
+        // Clone result before calling dyn_into to avoid ownership issues
+        let data_js_array = result.clone().dyn_into::<Uint8Array>().map_err(|e| {
+            JsValue::from_str(&format!(
+                "Failed to convert result to Uint8Array: {:?}, error: {:?}",
+                result, e
+            ))
+        })?;
+
+        // Check for empty data
+        if data_js_array.length() == 0 {
+            return Err(JsValue::from_str("Block data is empty"));
         }
-    })
+
+        // Convert Uint8Array to Vec<u8>
+        let data = data_js_array.to_vec();
+        trace!(
+            "**********************get_block Retrieved bytes for CID {:?}: {:?}",
+            cid,
+            data
+        );
+        trace!("**********************get_block finished**************");
+        Ok(data)
+    }
+
+    #[wasm_bindgen]
+    pub fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<(), JsValue> {
+        trace!("**********************put_block started**************");
+
+        // Convert CID and bytes to Uint8Array
+        let cid_js_array = Uint8Array::from(cid.as_slice());
+        let bytes_js_array = Uint8Array::from(bytes.as_slice());
+
+        // Get the "put" method from js_client
+        let binding = Reflect::get(&self.js_client, &JsValue::from_str("put"))
+            .map_err(|e| JsValue::from_str(&format!("Failed to get 'put' method: {:?}", e)))?;
+        let put_fn = binding
+            .dyn_ref::<Function>()
+            .ok_or_else(|| JsValue::from_str("Expected 'put' to be a JavaScript function"))?;
+
+        // Call the "put" method
+        put_fn
+            .call2(&self.js_client, &cid_js_array.into(), &bytes_js_array.into())
+            .map_err(|e| JsValue::from_str(&format!("Failed to call 'put': {:?}", e)))?;
+
+        trace!("**********************put_block Put bytes for CID {:?}:>>>>>>>>>>>>>> {:?}", cid, bytes);
+        trace!("**********************put_block finished**************");
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<'a> FFIStore<'a> for JSStore {
+    async fn get_block(&self, cid: Vec<u8>) -> Result<Vec<u8>> {
+        self.get_block(cid)
+            .await
+            .map_err(|e| Error::msg(format!("{:?}", e)))
+    }
+
+    async fn put_block(&self, cid: Vec<u8>, bytes: Vec<u8>) -> Result<()> {
+        self.put_block(cid, bytes)
+            .map_err(|e| Error::msg(format!("{:?}", e)))
+    }
 }
 
 #[wasm_bindgen]
-pub fn ls_native(
-    fula_client_prefix: &str,
-    cid: String,
-    path_segments: String,
-) -> js_sys::Promise {
-    trace!("**********************lsNative started**************");
-    let store = WebStore::new(fula_client_prefix.to_string());
+pub async fn init_native(js_client: JsValue, wnfs_key: &[u8]) -> Result<JsValue, JsValue> {
+    trace!("**********************init_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
     let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
-    let forest_cid = deserialize_cid(cid);
-    
-    future_to_promise(async move {
-        match PrivateDirectoryHelper::synced_reload(&mut block_store, forest_cid) {
-            Ok(mut helper) => {
-                let segments = prepare_path_segments(path_segments);
-                let path_vec: Vec<String> = serde_wasm_bindgen::from_value(segments)?;
-                
-                match helper.synced_ls_files(&path_vec) {
-                    Ok(ls_result) => {
-                        match prepare_ls_output(ls_result) {
-                            Ok(output) => {
-                                trace!("**********************lsNative finished**************");
-                                let array = js_sys::Uint8Array::from(output.as_slice());
-                                Ok(array.into())
-                            }
-                            Err(msg) => {
-                                trace!("wnfsError in ls_native output: {}", msg);
-                                Err(JsValue::from_str(&msg))
-                            }
-                        }
-                    }
-                    Err(msg) => {
-                        trace!("wnfsError in ls_native ls_res: {}", msg);
-                        Err(JsValue::from_str(&msg.to_string()))
-                    }
-                }
-            }
-            Err(msg) => {
-                trace!("wnfsError in ls_native forest_res: {}", msg);
-                Err(JsValue::from_str(&msg.to_string()))
-            }
+
+    match PrivateDirectoryHelper::init_async(&mut block_store, wnfs_key.to_vec()).await {
+        Ok((_, _, cid)) => {
+            trace!("init_native succeeded");
+            serde_wasm_bindgen::to_value(&cid).map_err(|e| JsValue::from_str(&e.to_string()))
         }
-    })
+        Err(err) => {
+            trace!("init_native failed: {:?}", err);
+            Err(JsValue::from_str(&err.to_string()))
+        }
+    }
 }
 
-    fn deserialize_cid(cid: String) -> Cid {
-        Cid::try_from(cid).unwrap()
-    }
+#[wasm_bindgen]
+pub async fn mkdir_native(
+    js_client: JsValue,
+    cid: &[u8],
+    path_segments: &str,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************mkdir_native started**************");
+    trace!("**********************mkdir_native received CID: {:?}", cid);
 
-    pub fn prepare_path_segments(path_segments: String) -> JsValue {
-        let segments: Vec<String> = PrivateDirectoryHelper::parse_path(path_segments)
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        
-        serde_wasm_bindgen::to_value(&segments).unwrap()
-    }
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
 
-    pub fn prepare_ls_output(ls_result: Vec<(String, Metadata)>) -> Result<Vec<u8>, String> {
-        let mut result: Vec<u8> = Vec::new();
-        let item_separator = "???".to_owned();
-        let line_separator = "!!!".to_owned();
-        
-        for item in ls_result.iter() {
-            let created = item.1.get_created();
-            let modification = item.1.get_modified();
-            
-            if let (Some(created), Some(modification)) = (created, modification) {
-                let filename = item.0.clone();
-                let creation_time = created.to_string();
-                let modification_time = modification.to_string();
-                
-                let row_string = format!("{}{}{}{}{}{}",
-                    filename,
-                    item_separator,
-                    creation_time,
-                    item_separator,
-                    modification_time,
-                    line_separator
-                );
-                
-                let mut row_byte = row_string.into_bytes();
-                result.append(&mut row_byte);
+    // Deserialize the CID
+    let cid = Cid::try_from(cid).map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare path segments
+        let path_segments: Vec<String> = path_segments.split('/').map(String::from).collect();
+
+        // Perform mkdir operation asynchronously
+        match helper.mkdir_async(&path_segments).await {
+            Ok(new_cid) => {
+                trace!("**********************mkdir_native finished**************");
+                serde_wasm_bindgen::to_value(&new_cid)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in mkdir_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
             }
         }
-        
-        Ok(result)
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in mkdir_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+pub async fn ls_native(
+    js_client: JsValue,
+    cid: &[u8],
+    path_segments: &str,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************ls_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(cid).map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare path segments
+        let path_segments: Vec<String> = path_segments.split('/').map(String::from).collect();
+
+        // Perform ls operation asynchronously
+        match helper.ls_files_async(&path_segments).await {
+            Ok(ls_result) => {
+                trace!("**********************ls_native finished**************");
+                serde_wasm_bindgen::to_value(&ls_result)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in ls_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
+            }
+        }
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in ls_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+pub async fn load_with_wnfs_key_native(
+    js_client: JsValue,
+    forest_cid: &[u8],
+    wnfs_key: &[u8],
+) -> Result<JsValue, JsValue> {
+    trace!("**********************load_with_wnfs_key_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(forest_cid)
+        .map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Call the async method
+    match PrivateDirectoryHelper::load_with_wnfs_key_async(&mut block_store, cid, wnfs_key.to_vec()).await {
+        Ok(helper) => {
+            trace!("load_with_wnfs_key_native succeeded");
+
+            // Construct the result struct
+            let result = PrivateDirectoryHelperResult {
+                forest_cid: cid.to_string(),
+                root_dir_cid: cid.to_string(),
+            };
+
+            // Serialize the result struct into a JsValue
+            serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
+        }
+        Err(err) => {
+            trace!("wnfsError in load_with_wnfs_key_native: {:?}", err);
+            Err(JsValue::from_str(&err.to_string()))
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub async fn write_file_native(
+    js_client: JsValue,
+    cid: &[u8],
+    path_segments: &str,
+    content: Vec<u8>,
+    modification_time_seconds: i64,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************write_file_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(cid)
+        .map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare path segments
+        let path_segments: Vec<String> = path_segments.split('/').map(String::from).collect();
+
+        // Perform write file operation asynchronously
+        match helper.write_file_async(&path_segments, content, modification_time_seconds).await {
+            Ok(new_cid) => {
+                trace!("**********************write_file_native finished**************");
+                serde_wasm_bindgen::to_value(&new_cid)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in write_file_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
+            }
+        }
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in write_file_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+pub async fn read_file_native(
+    js_client: JsValue,
+    cid: &[u8],
+    path_segments: &str,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************read_file_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(cid)
+        .map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare path segments
+        let path_segments: Vec<String> = path_segments.split('/').map(String::from).collect();
+
+        // Perform read file operation asynchronously
+        match helper.read_file_async(&path_segments).await {
+            Ok(file_content) => {
+                trace!("**********************read_file_native finished**************");
+                serde_wasm_bindgen::to_value(&file_content)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in read_file_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
+            }
+        }
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in read_file_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+pub async fn mv_native(
+    js_client: JsValue,
+    cid: &[u8],
+    source_path_segments: &str,
+    target_path_segments: &str,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************mv_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(cid)
+        .map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare source and target path segments
+        let source_path_segments: Vec<String> =
+            source_path_segments.split('/').map(String::from).collect();
+        let target_path_segments: Vec<String> =
+            target_path_segments.split('/').map(String::from).collect();
+
+        // Perform move operation asynchronously
+        match helper.mv_async(&source_path_segments, &target_path_segments).await {
+            Ok(new_cid) => {
+                trace!("**********************mv_native finished**************");
+                serde_wasm_bindgen::to_value(&new_cid)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in mv_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
+            }
+        }
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in mv_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+pub async fn cp_native(
+    js_client: JsValue,
+    cid: &[u8],
+    source_path_segments: &str,
+    target_path_segments: &str,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************cp_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(cid)
+        .map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare source and target path segments
+        let source_path_segments: Vec<String> =
+            source_path_segments.split('/').map(String::from).collect();
+        let target_path_segments: Vec<String> =
+            target_path_segments.split('/').map(String::from).collect();
+
+        // Perform copy operation asynchronously
+        match helper.cp_async(&source_path_segments, &target_path_segments).await {
+            Ok(new_cid) => {
+                trace!("**********************cp_native finished**************");
+                serde_wasm_bindgen::to_value(&new_cid)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in cp_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
+            }
+        }
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in cp_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
+    }
+}
+
+#[wasm_bindgen]
+pub async fn rm_native(
+    js_client: JsValue,
+    cid: &[u8],
+    path_segments: &str,
+) -> Result<JsValue, JsValue> {
+    trace!("**********************rm_native started**************");
+
+    // Create JSStore instance
+    let store = JSStore::new(js_client);
+    let mut block_store = FFIFriendlyBlockStore::new(Box::new(store));
+
+    // Deserialize the CID
+    let cid = Cid::try_from(cid)
+        .map_err(|e| JsValue::from_str(&format!("Invalid CID: {:?}", e)))?;
+
+    // Reload the private directory helper asynchronously
+    let helper_res = PrivateDirectoryHelper::reload_async(&mut block_store, cid).await;
+
+    if let Ok(mut helper) = helper_res {
+        // Prepare path segments
+        let path_segments: Vec<String> = path_segments.split('/').map(String::from).collect();
+
+        // Perform remove operation asynchronously
+        match helper.rm_async(&path_segments).await {
+            Ok(new_cid) => {
+                trace!("**********************rm_native finished**************");
+                serde_wasm_bindgen::to_value(&new_cid)
+                    .map_err(|e| JsValue::from_str(&e.to_string()))
+            }
+            Err(err) => {
+                trace!("wnfsError in rm_native: {:?}", err);
+                Err(JsValue::from_str(&err.to_string()))
+            }
+        }
+    } else {
+        let err = helper_res.err().unwrap();
+        trace!("wnfsError in rm_native (reload): {:?}", err);
+        Err(JsValue::from_str(&err.to_string()))
     }
 }

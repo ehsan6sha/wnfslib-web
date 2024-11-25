@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wnfs = { git = "https://github.com/wnfs-wg/rs-wnfs.git", rev = "491ce8555d811477e934e6a1a6b6e0d347a32357", default-features = false }
-wnfsutils = { git = "https://github.com/functionland//wnfs-utils-web.git", tag = "v1.1.7", default-features = false }
+wnfsutils = { git = "https://github.com/functionland//wnfs-utils-web.git", tag = "v1.1.11", default-features = false }
 libipld = { version = "0.16", features = ["dag-cbor", "derive", "serde-codec"] }
 anyhow = "1.0.66"
 serde = { version = "1.0.149", features = ["derive"] }
@@ -20,16 +20,20 @@ chrono = "0.4.22"
 rand = "0.8.5"
 getrandom = { version = "0.2", features = ["js"] }
 wasm-bindgen = "0.2.83"
+wasm-bindgen-futures = "0.4"
 log = "0.4"
 hex = "0.4"
 wasm-logger = "0.2"
 serde-wasm-bindgen = "0.6.5"
+console_log = "1.0.0"
+console_error_panic_hook = "0.1"
+futures-util = "0.3"
+async-trait = "0.1.58"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1.29.1", default-features = false, features = ["rt"] }
 console_error_panic_hook = "0.1"
 wasm-bindgen = { version = "0.2.87", features = ["serde-serialize"] }
-wasm-bindgen-futures = "=0.4.45"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "console",
